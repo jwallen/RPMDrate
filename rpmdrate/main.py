@@ -53,7 +53,7 @@ class RPMDError(Exception):
 
 ################################################################################
 
-def runUmbrellaTrajectory(rpmd, xi_current, p, q, equilibrationSteps, evolutionSteps, kforce, xi_range, saveTrajectory):
+def runUmbrellaTrajectory(rpmd, xi_current, p, q, equilibrationSteps, evolutionSteps, kforce, xi_range, saveTrajectory,strxi,Nwindows):
     """
     Run an individual umbrella integration trajectory, returning the sum of the
     first and second moments of the reaction coordinate at each time step.
@@ -61,12 +61,13 @@ def runUmbrellaTrajectory(rpmd, xi_current, p, q, equilibrationSteps, evolutionS
     if xi_range is None: xi_range = 0.0
     rpmd.activate()
     steps = 0
+    # print(saveTrajectory)
     while steps < evolutionSteps:
         p1 = numpy.asfortranarray(p.copy())
         q1 = numpy.asfortranarray(q.copy())
-        result = system.equilibrate(0, p1, q1, equilibrationSteps, xi_current, rpmd.potential, kforce, False, saveTrajectory)
+        result = system.equilibrate(0, p1, q1,equilibrationSteps, xi_current, rpmd.potential, kforce, False, saveTrajectory[0],strxi,Nwindows,saveTrajectory[1])
         if result != 0: continue
-        dav, dav2, actualSteps, result = system.umbrella_trajectory(0, p1, q1, evolutionSteps - steps, xi_current, rpmd.potential, kforce, xi_range, saveTrajectory)
+        dav, dav2, actualSteps, result = system.umbrella_trajectory(0, p1, q1, evolutionSteps - steps, xi_current, rpmd.potential, kforce, xi_range, saveTrajectory[0],strxi,Nwindows,saveTrajectory[1])
         steps += actualSteps
         if result != 0: continue
     
@@ -524,14 +525,24 @@ class RPMD:
                 f.close()
                 
         # Load initial configuration using results from generateUmbrellaConfigurations()
+        # for window in windows:
+        #     window.q = numpy.empty((3,self.Natoms,self.Nbeads), order='F')
+        #     for xi, q_initial in self.umbrellaConfigurations:
+        #         if xi >= window.xi:
+        #             break
+        #     for k in range(self.Nbeads):
+        #         window.q[:,:,k] = q_initial
         for window in windows:
             window.q = numpy.empty((3,self.Natoms,self.Nbeads), order='F')
-            for xi, q_initial in self.umbrellaConfigurations:
-                if xi >= window.xi:
-                    break
-            for k in range(self.Nbeads):
-                window.q[:,:,k] = q_initial
-
+            try:
+                #load q using results from Umbrella_sampling_q.npy
+                window.q=numpy.load(os.path.join(os.path.join(workingDirectory, 'umbrella_sampling_{0:.8f}_q.npy'.format(window.xi))))
+            except:
+                for xi, q_initial in self.umbrellaConfigurations:
+                    if xi >= window.xi:
+                        break
+                for k in range(self.Nbeads):
+                    window.q[:,:,k] = q_initial
         # This implementation is breadth-first, as we would rather get some
         # data in all windows than get lots of data in a few windows
         done = False
@@ -540,10 +551,10 @@ class RPMD:
             # Clear trajectories from previous iteration
             results = []
             done = True
-            
+            Nwindows=0
             # Run one trajectory for each window that needs more sampling
             for window in windows:
-
+                Nwindows+=1
                 equilibrationSteps = int(round(window.equilibrationTime / self.dt))
                 evolutionSteps = int(round(window.evolutionTime / self.dt))
             
@@ -556,14 +567,24 @@ class RPMD:
                 
                 # Load initial configuration from last finished trajectory
                 # for this window
+                try:
+                    window.q=numpy.load(os.path.join(os.path.join(workingDirectory, 'umbrella_sampling_{0:.8f}_q.npy'.format(window.xi))))
+                except:
+                    pass
                 q = window.q[:,:,:]
-                
                 # Spawn sampling trajectory in this window
                 windowEvolutionSteps = evolutionSteps
                 windowEquilibrationSteps = equilibrationSteps
                 logging.info('Spawning sampling trajectory at xi = {0:.4f}...'.format(window.xi))
                 p = self.sampleMomentum()
-                args = (self, window.xi, p, q, windowEquilibrationSteps, windowEvolutionSteps, window.kforce, window.xi_range, saveTrajectories)
+                strxi ='{0:.8f}'.format(window.xi)
+                args = (self, window.xi, p, q, 
+                    windowEquilibrationSteps,
+                    windowEvolutionSteps, 
+                    window.kforce, 
+                    window.xi_range, 
+                    saveTrajectories,strxi,Nwindows)
+                # args = (self, window.xi, p, q, windowEquilibrationSteps, windowEvolutionSteps, window.kforce, window.xi_range, saveTrajectories)
                 if pool:
                     results.append([window, pool.apply_async(runUmbrellaTrajectory, args)])
                 else:
@@ -608,7 +629,7 @@ class RPMD:
                 # Also save the geometry to use as the initial geometry for
                 # the next trajectory in this window
                 window.q = q[:,:,:]
-    
+                numpy.save(os.path.join(workingDirectory, 'umbrella_sampling_{0:.8f}_q.npy'.format(window.xi)),window.q)
                 umbrellaFilename = os.path.join(workingDirectory, 'umbrella_sampling_{0:.4f}.dat'.format(window.xi))
                 f = open(umbrellaFilename, 'a')
                 f.write('{0:15.8f} {1:15.8f} {2:11d} {3:15.5e} {4:15.5e}\n'.format(window.av, window.av2, window.count, mean, variance))
@@ -1460,10 +1481,15 @@ class RPMD:
         
         # Compute the static factor
         # (Use the same xi_current as used in the recrossing factor calculation)
-        from rpmdrate.interpolate import LinearInterpolator
-        f = LinearInterpolator(self.potentialOfMeanForce[0,:], self.potentialOfMeanForce[1,:])
-        W1 = f(xi_current)
-        W0 = f(0.0)
+        # from rpmdrate.interpolate import LinearInterpolator
+        # f = LinearInterpolator(self.potentialOfMeanForce[0,:], self.potentialOfMeanForce[1,:])
+        # W1 = f(xi_current)
+        # W0 = f(0.0)
+        # staticFactor = float(numpy.exp(-self.beta * (W1 - W0)))
+        a1=(self.potentialOfMeanForce[0,:]-xi_current)**2
+        a2=(self.potentialOfMeanForce[0,:])**2
+        W1=self.potentialOfMeanForce[1,numpy.argmin(a1)]
+        W0=self.potentialOfMeanForce[1,numpy.argmin(a2)]
         staticFactor = float(numpy.exp(-self.beta * (W1 - W0)))
         
         # Correct the rate coefficient to the transition state dividing surface

@@ -71,19 +71,19 @@ contains
     ! Returns:
     !   result - 0 if the trajectory evolution was successful, nonzero if unsuccessful
     subroutine equilibrate(t, p, q, Natoms, Nbeads, steps, &
-        xi_current, potential, kforce, constrain, save_trajectory, result)
+        xi_current, potential, kforce, constrain, save_trajectory, result,strxi,NumWindow,everycount)
 
         use transition_state, only: check_for_valid_position
 
         implicit none
         external potential
-        integer, intent(in) :: Natoms, Nbeads
+        integer, intent(in) :: Natoms, Nbeads,NumWindow,everycount
+        character(len=*) :: strxi
         double precision, intent(inout) :: t, p(3,Natoms,Nbeads), q(3,Natoms,Nbeads)
         integer, intent(in) :: steps
         double precision, intent(in) :: xi_current, kforce
         integer, intent(in) :: constrain, save_trajectory
         integer, intent(out) :: result
-
         double precision :: V(Nbeads), dVdq(3,Natoms,Nbeads)
         double precision :: xi, dxi(3,Natoms), d2xi(3,Natoms,3,Natoms)
         double precision :: centroid(3,Natoms)
@@ -106,8 +106,9 @@ contains
         end if
 
         if (save_trajectory .eq. 1) then
-            open(unit=77,file='equilibrate.xyz')
-            open(unit=88,file='equilibrate_centroid.xyz')
+            open(unit=4*NumWindow+900,file='tra/eq_beads/equilibrate_'//strxi//".xyz")
+            open(unit=4*NumWindow+901,file='tra/eq_centroid/equilibrate_centroid_'//strxi//".xyz")
+            open(unit=4*NumWindow+902,file='tra/eq_xi/equilibrate_xi_'//strxi//".dat")
         end if
 
         call get_centroid(q, Natoms, Nbeads, centroid)
@@ -145,9 +146,14 @@ contains
                     exit
                 end if
             end if
-
-            if (save_trajectory .eq. 1) call update_vmd_output(q, Natoms, Nbeads, 77, 88)
-
+            ! write 
+            if (save_trajectory .eq. 1) then
+                if (mod(step,everycount) .eq. 1) then
+                    call get_centroid(q, Natoms, Nbeads, centroid)
+                    ! call get_reaction_coordinate(centroid, Natoms, xi_current, xi_new, dxi_new, d2xi_new)
+                    call update_vmd_output(q, Natoms, Nbeads, xi ,NumWindow*4+900, NumWindow*4+901,NumWindow*4+902)
+                end if
+            end if 
             ! Apply Andersen thermostat (if turned on)
             if (thermostat .eq. 1) then
                 if (mod(step, andersen_sampling_steps) .eq. 0) call sample_momentum(p, mass, beta, Natoms, Nbeads)
@@ -166,8 +172,9 @@ contains
         end if
 
         if (save_trajectory .eq. 1) then
-            close(unit=77)
-            close(unit=88)
+            close(unit=4*NumWindow+900)
+            close(unit=4*NumWindow+901)
+            close(unit=4*NumWindow+902)
         end if
 
     end subroutine equilibrate
@@ -209,10 +216,10 @@ contains
 
         result = 0
 
-        if (save_trajectory .eq. 1) then
-            open(unit=777,file='child.xyz')
-            open(unit=888,file='child_centroid.xyz')
-        end if
+        ! if (save_trajectory .eq. 1) then
+        !     open(unit=777,file='child.xyz')
+        !     open(unit=888,file='child_centroid.xyz')
+        ! end if
 
         call get_centroid(q, Natoms, Nbeads, centroid)
         call get_reaction_coordinate(centroid, Natoms, xi_current, xi, dxi, d2xi)
@@ -231,37 +238,41 @@ contains
             call verlet_step(t, p, q, V, dVdq, xi, dxi, d2xi, Natoms, Nbeads, &
                 xi_current, potential, 0.d0, 0, result)
             if (result .ne. 0) exit
-            if (save_trajectory .eq. 1) call update_vmd_output(q, Natoms, Nbeads, 777, 888)
+            ! if (save_trajectory .eq. 1) then
+            ! if (mod(step,5000) .eq. 1) then 
+            !     call update_vmd_output(q, Natoms, Nbeads, 777, 888)
             if (xi .gt. 0) kappa_num(step) = kappa_num(step) + vs / fs
         end do
 
-        if (save_trajectory .eq. 1) then
-            close(unit=777)
-            close(unit=888)
-        end if
+        ! if (save_trajectory .eq. 1) then
+        !     close(unit=777)
+        !     close(unit=888)
+        ! end if
 
     end subroutine recrossing_trajectory
 
     subroutine umbrella_trajectory(t, p, q, Natoms, Nbeads, steps, &
         xi_current, potential, kforce, xi_range, save_trajectory, av, av2, &
-        actual_steps, result)
+        actual_steps, result,strxi,NumWindow,everycount)
 
         use transition_state, only: check_for_valid_position, check_values
 
         implicit none
-        external potential
-        integer, intent(in) :: Natoms, Nbeads
-        double precision, intent(inout) :: t, p(3,Natoms,Nbeads), q(3,Natoms,Nbeads)
-        double precision, intent(in) :: xi_current, kforce, xi_range
-        integer, intent(in) :: steps
-        integer, intent(in) :: save_trajectory
-        double precision, intent(out) :: av, av2
-        integer, intent(out) :: actual_steps, result
-
-        double precision :: V(Nbeads), dVdq(3,Natoms,Nbeads)
-        double precision :: xi, dxi(3,Natoms), d2xi(3,Natoms,3,Natoms)
-        double precision :: centroid(3,Natoms)
-        integer :: step, andersen_sampling_steps
+            external potential
+            integer, intent(in) :: Natoms, Nbeads
+            integer, intent(in) :: NumWindow,everycount
+            character(len=*) :: strxi
+            double precision, intent(inout) :: t, p(3,Natoms,Nbeads), q(3,Natoms,Nbeads)
+            double precision, intent(in) :: xi_current, kforce, xi_range
+            integer, intent(in) :: steps
+            integer, intent(in) :: save_trajectory
+            double precision, intent(out) :: av, av2
+            integer, intent(out) :: actual_steps, result
+            double precision :: xi_new, dxi_new, d2xi_new
+            double precision :: V(Nbeads), dVdq(3,Natoms,Nbeads)
+            double precision :: xi, dxi(3,Natoms), d2xi(3,Natoms,3,Natoms)
+            double precision :: centroid(3,Natoms)
+            integer :: step, andersen_sampling_steps
 
         result = 0
         actual_steps = 0
@@ -282,10 +293,11 @@ contains
         if (thermostat .eq. 2) then
             call gle_initialize(dt, Natoms, Nbeads, gle_A(1:gle_Ns+1,1:gle_Ns+1), gle_C(1:gle_Ns+1,1:gle_Ns+1), gle_Ns)
         end if
-
+        ! write open file to write trajectory
         if (save_trajectory .eq. 1) then
-            open(unit=777,file='child.xyz')
-            open(unit=888,file='child_centroid.xyz')
+            open(unit=NumWindow*4+10,file='tra/child_beads/child_'//strxi//".xyz")
+            open(unit=NumWindow*4+11,file='tra/child_centroid/child_centroid_'//strxi//".xyz")
+            open(unit=NumWindow*4+12,file='tra/child_xi/child_xi_'//strxi//".dat")
         end if
 
         call get_centroid(q, Natoms, Nbeads, centroid)
@@ -329,8 +341,13 @@ contains
                 exit
             end if
 
-            if (save_trajectory .eq. 1) call update_vmd_output(q, Natoms, Nbeads, 777, 888)
-
+            if (save_trajectory .eq. 1) then
+                if (mod(step,everycount) .eq. 1) then
+                    call get_centroid(q, Natoms, Nbeads, centroid)
+                    ! call get_reaction_coordinate(centroid, Natoms, xi_current, xi_new, dxi_new, d2xi_new)
+                    call update_vmd_output(q, Natoms, Nbeads, xi ,NumWindow*4+10, NumWindow*4+11,NumWindow*4+12)
+                end if
+            end if
             av = av + xi
             av2 = av2 + xi * xi
 
@@ -354,8 +371,9 @@ contains
         end if
 
         if (save_trajectory .eq. 1) then
-            close(unit=777)
-            close(unit=888)
+            close(unit=4*NumWindow+10)
+            close(unit=4*NumWindow+11)
+            close(unit=4*NumWindow+12)
         end if
 
     end subroutine umbrella_trajectory
@@ -389,7 +407,6 @@ contains
     !   result - A flag that indicates if the time step completed successfully (if zero) or that an error occurred (if nonzero)
     subroutine verlet_step(t, p, q, V, dVdq, xi, dxi, d2xi, Natoms, Nbeads, &
         xi_current, potential, kforce, constrain, result)
-
         implicit none
         external potential, reactants_surface, transition_state_surface
         integer, intent(in) :: Natoms, Nbeads
@@ -1092,17 +1109,18 @@ contains
     !   Nbeads - The number of beads to use per atom
     !   beads_file_number - The output file number to save all beads to
     !   centroid_file_number - The output file number to save the centroids to
-    subroutine update_vmd_output(q, Natoms, Nbeads, beads_file_number, centroid_file_number)
+    subroutine update_vmd_output(q, Natoms, Nbeads, xi, beads_file_number, centroid_file_number,xi_file_number)
 
         integer, intent(in) :: Natoms, Nbeads
         double precision, intent(in) :: q(3,Natoms,Nbeads)
-        integer, intent(in) :: beads_file_number, centroid_file_number
+        double precision, intent(in) :: xi
+        integer, intent(in) :: beads_file_number, centroid_file_number, xi_file_number
         integer :: j, k
 
         double precision :: centroid(3,Natoms)
 
         call get_centroid(q, Natoms, Nbeads, centroid)
-
+        
         write(beads_file_number,fmt='(I6)') Natoms * Nbeads
         write(beads_file_number,fmt='(A)')
         do j = 1, Natoms
@@ -1116,6 +1134,8 @@ contains
         do j = 1, Natoms
             write(centroid_file_number,fmt='(I4,3F11.6)') j, centroid(1,j), centroid(2,j), centroid(3,j)
         end do
+
+        write(xi_file_number,fmt='(F11.6)') xi
 
     end subroutine
 
